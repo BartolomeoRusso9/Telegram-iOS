@@ -3496,6 +3496,9 @@ public final class PresentationGroupCallImpl: PresentationGroupCall {
         }
     }
 
+    // Lives as long as the call, so that casting outlasts the screen that started it.
+    var castController: AnyObject?
+
     // A stream's mixed audio plays on channel 1 (tgcalls StreamingMediaContext).
     func setCastPlaybackMuted(_ isMuted: Bool) {
         self.genericCallContext?.setVolume(ssrc: 1, volume: isMuted ? 0.0 : 1.0)

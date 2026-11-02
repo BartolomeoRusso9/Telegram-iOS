@@ -11,4 +11,5 @@
 #import <FFMpegBinding/FFMpegAVCodec.h>
 #import <FFMpegBinding/FFMpegRemuxer.h>
 #import <FFMpegBinding/FFMpegLiveMuxer.h>
+#import <FFMpegBinding/FFMpegCastMuxer.h>
 #import <FFMpegBinding/FrameConverter.h>

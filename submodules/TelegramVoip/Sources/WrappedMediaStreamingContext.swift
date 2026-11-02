@@ -274,28 +274,53 @@ public final class ExternalMediaStreamingContext: SharedHLSServerSource {
             }
         }
         
+        func audioPartData(index: Int) -> Signal<Data?, NoError> {
+            let segmentDuration: Int64 = 1000
+            guard let broadcastPartsSource = self.broadcastPartsSource else {
+                return .single(nil)
+            }
+            return Signal { subscriber in
+                return broadcastPartsSource.requestPart(
+                    timestampMilliseconds: Int64(index) * segmentDuration,
+                    durationMilliseconds: segmentDuration,
+                    subject: .audio,
+                    completion: { part in
+                        subscriber.putNext(part.oggData.isEmpty ? nil : part.oggData)
+                    },
+                    rejoinNeeded: {
+                    }
+                )
+            }
+        }
+
         func fileData(id: Int64, range: Range<Int>) -> Signal<(EngineTempBoxFile, Range<Int>, Int)?, NoError> {
             return .never()
         }
     }
-    
+
     private let queue = Queue()
     let internalId: CallSessionInternalId
     private let impl: QueueLocalObject<Impl>
     private var hlsServerDisposable: Disposable?
-    
+
     public var id: String {
         return self.internalId.uuidString
     }
-    
+
     public init(id: CallSessionInternalId, rejoinNeeded: @escaping () -> Void) {
         self.internalId = id
         let queue = self.queue
         self.impl = QueueLocalObject(queue: queue, generate: {
             return Impl(queue: queue, rejoinNeeded: rejoinNeeded)
         })
-        
+
         self.hlsServerDisposable = SharedHLSServer.shared.registerPlayer(source: self, completion: {})
+    }
+
+    public func audioPartData(index: Int) -> Signal<Data?, NoError> {
+        return self.impl.signalWith { impl, subscriber in
+            impl.audioPartData(index: index).start(next: subscriber.putNext)
+        }
     }
     
     deinit {
