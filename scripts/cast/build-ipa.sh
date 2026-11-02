@@ -3,39 +3,27 @@
 #
 #   build-ipa.sh --configuration <config.json> --signing <dir> --build-number <n>
 #
-# <dir> holds certs/ and profiles/ as described in docs/google-cast/README.md. With
-# --unsigned-check it uses the repository's fake codesigning instead: that proves the device
-# build links, and its result is named so that nobody mistakes it for something installable.
+# <dir> holds certs/ and profiles/ as described in docs/google-cast/README.md. There is no
+# unsigned mode: rules_apple refuses a device app without a valid provisioning profile.
 set -euo pipefail
 
 CONFIGURATION=""
 SIGNING=""
 BUILD_NUMBER=""
-UNSIGNED=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --configuration) CONFIGURATION="$2"; shift 2 ;;
         --signing) SIGNING="$2"; shift 2 ;;
         --build-number) BUILD_NUMBER="$2"; shift 2 ;;
-        --unsigned-check) UNSIGNED=1; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
-if [ -z "$CONFIGURATION" ] || [ -z "$BUILD_NUMBER" ]; then
-    echo "--configuration and --build-number are required" >&2
+if [ -z "$CONFIGURATION" ] || [ -z "$SIGNING" ] || [ -z "$BUILD_NUMBER" ]; then
+    echo "--configuration, --signing and --build-number are required" >&2
     exit 2
 fi
-if [ "$UNSIGNED" = 1 ]; then
-    SIGNING="build-system/fake-codesigning"
-    NAME="Telegram-Cast-UNSIGNED-NOT-INSTALLABLE"
-else
-    NAME="Telegram-Cast"
-    if [ -z "$SIGNING" ]; then
-        echo "--signing is required (or --unsigned-check)" >&2
-        exit 2
-    fi
-fi
+NAME="Telegram-Cast"
 
 python3 scripts/cast/check-integration.py
 
@@ -82,8 +70,6 @@ done
 test -d "$APP/GoogleCastUIResources.bundle"
 grep -q GCKCastContext "$APP/Frameworks/TelegramUIFramework.framework/TelegramUIFramework"
 
-if [ "$UNSIGNED" = 0 ]; then
-    /usr/bin/codesign --verify --deep --strict "$APP"
-fi
+/usr/bin/codesign --verify --deep --strict "$APP"
 ls -la "output/$NAME.ipa"
 echo "Built output/$NAME.ipa and $ARCHIVE"

@@ -71,8 +71,15 @@ Il risultato è `output/Telegram-Cast.ipa` con `output/Telegram-Cast.xcarchive`.
 Telegram stesso a firmare e impacchettare l'IPA, quindi `xcodebuild -exportArchive` non serve:
 l'archivio viene ricavato dall'IPA e contiene la stessa app.
 
-`--unsigned-check` usa la firma fittizia: dimostra che la build per dispositivo si compila, ma
-produce `Telegram-Cast-UNSIGNED-NOT-INSTALLABLE.ipa`, che **non si installa** su un iPhone.
+Non esiste una modalità senza firma: `rules_apple` rifiuta un'app per dispositivo senza un
+profilo valido. Per controllare compilazione e link release senza firma si può costruire il solo
+framework:
+
+```bash
+python3 build-system/Make/Make.py --cacheDir="$HOME/telegram-bazel-cache" build --disableProvisioningProfiles --target=Telegram/TelegramUIFramework --configurationPath=<config.json> --codesigningInformationPath=build-system/fake-codesigning --buildNumber=1 --configuration=release_arm64
+```
+
+Spazio su disco misurato per una singola configurazione: circa 20-25 GB, più la cache.
 
 `output/` non va mai committata: contiene binari firmati.
 
