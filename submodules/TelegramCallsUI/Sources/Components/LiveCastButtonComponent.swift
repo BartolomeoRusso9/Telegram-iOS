@@ -13,6 +13,7 @@ import TelegramCast
 // runs only while casting, on its own connection to the stream's parts.
 private final class CastLiveStreamSource: TelegramCastDynamicSource {
     private static let partTimeout: Double = 10.0
+    static let entryPath = "live.m3u8"
 
     private let context = ExternalMediaStreamingContext(id: CallSessionInternalId(), rejoinNeeded: {})
     private let lock = NSLock()
@@ -23,9 +24,21 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
     private var playlistsServed = 0
     private var partsServed = 0
     private var partsFailed = 0
+    private var firstRequestTimestamp: Double?
+    private var requestLog: [String] = []
+    private var partsHaveAudio: Bool?
 
     init(streamData: OngoingGroupCallContext.AudioStreamData) {
         self.context.setAudioStreamData(audioStreamData: streamData)
+    }
+
+    // Without audio in the parts the receiver is silent, and the phone stays the only sound.
+    var receiverPlaysAudio: Bool {
+        self.lock.lock()
+        defer {
+            self.lock.unlock()
+        }
+        return self.partsHaveAudio == true
     }
 
     // What the first segment turned out to be, for the failure message.
@@ -34,7 +47,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         defer {
             self.lock.unlock()
         }
-        let requests = "playlists \(self.playlistsServed), parts \(self.partsServed), failed \(self.partsFailed)"
+        let requests = "playlists \(self.playlistsServed), parts \(self.partsServed), failed \(self.partsFailed)\n" + self.requestLog.joined(separator: "\n")
         guard let firstPartDescription = self.firstPartDescription else {
             return "no segment was requested; \(requests)"
         }
@@ -100,6 +113,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
             let description = "video \(info.video?.codecName ?? "none") start \(info.video?.startTime.seconds ?? 0.0), audio \(info.audio?.codecName ?? "none")"
             self.lock.lock()
             self.mediaDescription = description
+            self.partsHaveAudio = info.audio != nil
             self.lock.unlock()
         }
         guard FFMpegLiveMuxer.remux(sourceFile.path, to: outputFile.path, offsetSeconds: Double(index - baseIndex)) else {
@@ -113,14 +127,23 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
 
     func resource(path: String, completion: @escaping ((data: Data, contentType: String)?) -> Void) -> () -> Void {
         let playlistContentType = "application/x-mpegurl"
+        self.lock.lock()
+        let startTimestamp = self.firstRequestTimestamp ?? CFAbsoluteTimeGetCurrent()
+        self.firstRequestTimestamp = startTimestamp
+        if self.requestLog.count < 5 {
+            self.requestLog.append("\(path.prefix(14)) +\(Int((CFAbsoluteTimeGetCurrent() - startTimestamp) * 1000.0))ms")
+        }
+        self.lock.unlock()
+
         let signal: Signal<(data: Data, contentType: String)?, NoError>
-        if path == "master.m3u8" {
-            signal = self.context.masterPlaylistData()
-            |> map { value -> (data: Data, contentType: String)? in
-                return (Data(value.utf8), playlistContentType)
-            }
-        } else if path == "hls_level_0.m3u8" || path == "hls_level_1.m3u8" {
-            signal = self.context.playlistData(quality: path == "hls_level_0.m3u8" ? 0 : 1)
+        if path == CastLiveStreamSource.entryPath {
+            // Telegram's own master playlist announces audio, which these parts do not always
+            // carry, and the receiver fails when a declared track never appears.
+            let playlist = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH=3300000,RESOLUTION=1280x720,CODECS=\"avc1.64001f\"\nhls_level_0.m3u8\n"
+            completion((Data(playlist.utf8), playlistContentType))
+            return {}
+        } else if path == "hls_level_0.m3u8" {
+            signal = self.context.playlistData(quality: 0)
             |> map { value -> (data: Data, contentType: String)? in
                 return (Data(value.utf8), playlistContentType)
             }
@@ -194,7 +217,7 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         let streamData = OngoingGroupCallContext.AudioStreamData(engine: self.call.accountContext.engine, callId: description.id, accessHash: description.accessHash, isExternalStream: self.call.isStream)
         let source = CastLiveStreamSource(streamData: streamData)
         self.source = source
-        return TelegramCastMedia(source: .live(source, entryPath: "hls_level_0.m3u8", contentType: "application/x-mpegurl"), title: description.title, duration: nil)
+        return TelegramCastMedia(source: .live(source, entryPath: CastLiveStreamSource.entryPath, contentType: "application/x-mpegurl"), title: description.title, duration: nil)
     }
 
     private func presentFailure(reason: String) {
@@ -209,7 +232,9 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
     }
 
     func castPauseLocalPlayback() {
-        self.call.setCastPlaybackMuted(true)
+        if self.source?.receiverPlaysAudio == true {
+            self.call.setCastPlaybackMuted(true)
+        }
     }
 
     func castResumeLocalPlayback(at position: Double) {
