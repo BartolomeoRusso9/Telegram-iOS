@@ -646,6 +646,8 @@ def build(bazel, arguments):
             print('TelegramBuild: warning: --embedWatchApp requires a device configuration (debug_arm64 or release_arm64); ignored for simulator builds.')
     if arguments.disableProvisioningProfiles:
         bazel_command_line.set_disable_provisioning_profiles()
+    if arguments.adHocSigning:
+        bazel_command_line.common_build_args.append('--ios_signing_cert_name=-')
     bazel_command_line.set_build_number(arguments.buildNumber)
     bazel_command_line.set_custom_target(arguments.target)
     bazel_command_line.set_continue_on_error(arguments.continueOnError)
@@ -1126,6 +1128,12 @@ if __name__ == '__main__':
         action='store_true',
         default=False,
         help='Build without provisioning profiles (simulator only).'
+    )
+    buildParser.add_argument(
+        '--adHocSigning',
+        action='store_true',
+        default=False,
+        help='Sign device builds ad hoc, for a tool that re-signs the IPA before installing it.'
     )
 
     remote_build_parser =subparsers.add_parser('remote-build', help='Build the app using a remote environment.')

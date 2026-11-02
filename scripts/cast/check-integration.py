@@ -23,6 +23,8 @@ REQUIRED = [
     ("Telegram/BUILD", "_googlecast._tcp"),
     ("Telegram/BUILD", "NSLocalNetworkUsageDescription"),
     ("Telegram/BUILD", "TelegramCastReceiverApplicationID"),
+    ("build-system/Make/Make.py", "--adHocSigning"),
+    ("submodules/TelegramUI/Sources/AppDelegate.swift", "sideloadAppContainerUrl()"),
 ]
 
 FILES = [

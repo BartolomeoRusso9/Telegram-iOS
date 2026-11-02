@@ -53,6 +53,32 @@ Per il simulatore la configurazione deve usare `bundle_id` e `team_id` di
 `build-system/appstore-configuration.json`, gli unici che corrispondono ai profili fittizi.
 Quei profili sono scaduti il 2026-10-30, perciò la build del simulatore li disattiva.
 
+## Sideload con Apple ID gratuito
+
+Non serve un account a pagamento: l'IPA viene rifirmato da uno strumento di sideload col tuo
+Apple ID. Crea un file di configurazione fuori dal repository, copiando
+`build-system/appstore-configuration.json` e inserendo il tuo `api_id` e `api_hash`, lasciando
+`bundle_id` e `team_id` com'erano, poi:
+
+```bash
+bash scripts/cast/build-sideload-ipa.sh <config.json> 1
+```
+
+Il risultato è `output/Telegram-Cast-sideload.ipa`, che **non si installa da solo**: va aperto
+con Sideloadly o AltStore. In Sideloadly attiva la rimozione delle estensioni: un Apple ID
+gratuito ha limiti stretti sugli App ID.
+
+Limiti di un Apple ID gratuito:
+
+- La firma dura 7 giorni: poi va rifatto il sideload, e i dati restano se il bundle non cambia.
+- Massimo 3 app sideloaded attive.
+- Niente notifiche push: i messaggi arrivano solo ad app aperta.
+- Niente condivisione verso Telegram, widget e altre estensioni, se rimosse.
+- Un codice di accesso impostato in Telegram va verificato: dipende dal portachiavi rifirmato.
+
+Il fallback di `SideloadAppContainer.swift` evita il blocco «Error 2» quando l'App Group non
+coincide col bundle rifirmato.
+
 ## Generazione dell'IPA e firma Apple
 
 1. Ottieni `api_id` e `api_hash` da <https://my.telegram.org/apps>.
