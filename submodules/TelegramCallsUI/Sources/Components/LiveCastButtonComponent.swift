@@ -17,6 +17,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
 
     private let context = ExternalMediaStreamingContext(id: CallSessionInternalId(), rejoinNeeded: {})
     private let lock = NSLock()
+    private let remuxQueue = Queue()
     private var firstPartDescription: String?
     private var baseIndex: Int?
     private var remuxFailed = false
@@ -26,6 +27,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
     private var partsFailed = 0
     private var firstRequestTimestamp: Double?
     private var requestLog: [String] = []
+    private var stages: [String] = []
     private var partsHaveAudio: Bool?
 
     init(streamData: OngoingGroupCallContext.AudioStreamData) {
@@ -47,7 +49,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         defer {
             self.lock.unlock()
         }
-        let requests = "playlists \(self.playlistsServed), parts \(self.partsServed), failed \(self.partsFailed)\n" + self.requestLog.joined(separator: "\n")
+        let requests = "playlists \(self.playlistsServed), parts \(self.partsServed), failed \(self.partsFailed)\n" + self.stages.joined(separator: ", ")
         guard let firstPartDescription = self.firstPartDescription else {
             return "no segment was requested; \(requests)"
         }
@@ -116,13 +118,27 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
             self.partsHaveAudio = info.audio != nil
             self.lock.unlock()
         }
+        self.mark("muxing")
         guard FFMpegLiveMuxer.remux(sourceFile.path, to: outputFile.path, offsetSeconds: Double(index - baseIndex)) else {
             self.lock.lock()
             self.remuxFailed = true
             self.lock.unlock()
             return nil
         }
-        return try? Data(contentsOf: URL(fileURLWithPath: outputFile.path))
+        self.mark("muxed")
+        let result = try? Data(contentsOf: URL(fileURLWithPath: outputFile.path))
+        self.mark("read \(result?.count ?? -1)")
+        return result
+    }
+
+    // The first few steps of serving a segment, with their time.
+    private func mark(_ stage: String) {
+        self.lock.lock()
+        if self.stages.count < 12 {
+            let elapsed = CFAbsoluteTimeGetCurrent() - (self.firstRequestTimestamp ?? 0.0)
+            self.stages.append("\(stage) +\(Int(elapsed * 1000.0))")
+        }
+        self.lock.unlock()
     }
 
     func resource(path: String, completion: @escaping ((data: Data, contentType: String)?) -> Void) -> () -> Void {
@@ -150,11 +166,14 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         } else if let part = CastLiveStreamSource.parsePart(path: path) {
             signal = self.context.partData(index: part.index, quality: part.quality)
             |> take(1)
-            |> deliverOn(Queue.concurrentDefaultQueue())
+            // Serial on purpose: on a concurrent queue the completion overtakes the value while
+            // it is being remuxed, and the finished segment is then dropped.
+            |> deliverOn(self.remuxQueue)
             |> map { [weak self] data -> (data: Data, contentType: String)? in
                 guard let self, let data else {
                     return nil
                 }
+                self.mark("data")
                 self.notePart(data)
                 guard let segment = self.transportStream(from: data, index: part.index) else {
                     return nil
@@ -178,6 +197,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
                     self.partsFailed += 1
                 }
                 self.lock.unlock()
+                self.mark(value == nil ? "reply nil" : "reply \(value?.data.count ?? 0)")
             }
             completion(value)
         })
