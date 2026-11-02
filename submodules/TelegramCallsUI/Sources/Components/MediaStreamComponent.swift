@@ -422,6 +422,8 @@ public final class MediaStreamComponent: CombinedComponent {
             //                }
             //            }
             
+            navigationRightItems.append(AnyComponentWithIdentity(id: "cast", component: AnyComponent(LiveCastButtonComponent(call: context.component.call, size: 32.0))))
+
             if context.state.isPictureInPictureSupported {
                 navigationRightItems.append(AnyComponentWithIdentity(id: "pip", component: AnyComponent(Button(
                     content: AnyComponent(ZStack([

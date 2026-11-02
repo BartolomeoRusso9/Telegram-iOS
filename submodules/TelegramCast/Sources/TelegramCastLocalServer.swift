@@ -12,6 +12,13 @@ public protocol TelegramCastByteSource: AnyObject {
     func read(range: Range<Int64>, completion: @escaping (Data?) -> Void) -> () -> Void
 }
 
+// Files that exist only while a stream runs: a live playlist and its segments. The source decides
+// which relative paths exist, and answers nil for any other.
+public protocol TelegramCastDynamicSource: AnyObject {
+    // Calls completion once, on any queue. The returned closure cancels the request.
+    func resource(path: String, completion: @escaping ((data: Data, contentType: String)?) -> Void) -> () -> Void
+}
+
 public enum TelegramCastHTTPRange: Equatable {
     case full
     case partial(Range<Int64>)
@@ -74,7 +81,8 @@ public final class TelegramCastLocalServer {
     private static let requestTimeout: Double = 15.0
 
     private let queue = DispatchQueue(label: "org.telegram.TelegramCastLocalServer")
-    private let source: TelegramCastByteSource
+    private let source: TelegramCastByteSource?
+    private let dynamicSource: TelegramCastDynamicSource?
     private let token: String
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: Connection] = [:]
@@ -86,6 +94,16 @@ public final class TelegramCastLocalServer {
             return nil
         }
         self.source = source
+        self.dynamicSource = nil
+        self.token = token
+    }
+
+    public init?(dynamicSource: TelegramCastDynamicSource) {
+        guard let token = TelegramCastLocalServer.generateToken() else {
+            return nil
+        }
+        self.source = nil
+        self.dynamicSource = dynamicSource
         self.token = token
     }
 
@@ -106,8 +124,13 @@ public final class TelegramCastLocalServer {
         return "/cast/\(self.token)/video"
     }
 
+    private var dynamicRoot: String {
+        return "/cast/\(self.token)/"
+    }
+
     // host is nil to use the address of the Wi-Fi or Ethernet interface a Cast device can reach.
-    public func start(host: String? = nil, completion: @escaping (Result<URL, StartError>) -> Void) {
+    // relativePath names the first file of a dynamic source.
+    public func start(host: String? = nil, relativePath: String? = nil, completion: @escaping (Result<URL, StartError>) -> Void) {
         self.queue.async {
             guard let address = host ?? TelegramCastLocalServer.localNetworkAddress() else {
                 completion(.failure(.noLocalAddress))
@@ -127,7 +150,8 @@ public final class TelegramCastLocalServer {
                 }
                 switch state {
                 case .ready:
-                    if !didComplete, let port = listener?.port?.rawValue, let url = URL(string: "http://\(address):\(port)\(self.path)") {
+                    let path = relativePath.flatMap { self.dynamicRoot + $0 } ?? self.path
+                    if !didComplete, let port = listener?.port?.rawValue, let url = URL(string: "http://\(address):\(port)\(path)") {
                         didComplete = true
                         completion(.success(url))
                     }
@@ -213,11 +237,18 @@ public final class TelegramCastLocalServer {
     fileprivate enum Response {
         case error(status: String)
         case body(status: String, range: Range<Int64>?, headOnly: Bool)
+        case dynamic(path: String, source: TelegramCastDynamicSource, headOnly: Bool)
     }
 
     fileprivate func response(method: String, target: String, rangeHeader: String?, connection: NWConnection) -> Response {
         let path = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
-        guard TelegramCastLocalServer.tokensMatch(path, self.path) else {
+        let authorized: Bool
+        if self.dynamicSource != nil {
+            authorized = TelegramCastLocalServer.tokensMatch(String(path.prefix(self.dynamicRoot.count)), self.dynamicRoot)
+        } else {
+            authorized = TelegramCastLocalServer.tokensMatch(path, self.path)
+        }
+        guard authorized else {
             return .error(status: "404 Not Found")
         }
         // The URL is a bearer secret sent in clear on the LAN, so the first device to use it
@@ -233,7 +264,13 @@ public final class TelegramCastLocalServer {
         guard method == "GET" || method == "HEAD" else {
             return .error(status: "405 Method Not Allowed")
         }
-        switch TelegramCastHTTPRange.parse(header: rangeHeader, size: self.source.size) {
+        if let dynamicSource = self.dynamicSource {
+            return .dynamic(path: String(path.dropFirst(self.dynamicRoot.count)), source: dynamicSource, headOnly: method == "HEAD")
+        }
+        guard let source = self.source else {
+            return .error(status: "404 Not Found")
+        }
+        switch TelegramCastHTTPRange.parse(header: rangeHeader, size: source.size) {
         case .full:
             return .body(status: "200 OK", range: nil, headOnly: method == "HEAD")
         case let .partial(range):
@@ -243,7 +280,7 @@ public final class TelegramCastLocalServer {
         }
     }
 
-    fileprivate var byteSource: TelegramCastByteSource {
+    fileprivate var byteSource: TelegramCastByteSource? {
         return self.source
     }
 
@@ -334,7 +371,46 @@ public final class TelegramCastLocalServer {
             case let .error(status):
                 self.sendError(status: status)
             case let .body(status, range, headOnly):
-                self.sendBody(status: status, range: range, headOnly: headOnly, source: server.byteSource)
+                if let source = server.byteSource {
+                    self.sendBody(status: status, range: range, headOnly: headOnly, source: source)
+                } else {
+                    self.sendError(status: "404 Not Found")
+                }
+            case let .dynamic(path, source, headOnly):
+                self.sendDynamic(path: path, source: source, headOnly: headOnly)
+            }
+        }
+
+        private func sendDynamic(path: String, source: TelegramCastDynamicSource, headOnly: Bool) {
+            self.cancelRead = source.resource(path: path) { [weak self] resource in
+                guard let self else {
+                    return
+                }
+                self.queue.async {
+                    self.cancelRead = nil
+                    guard !self.isClosed else {
+                        return
+                    }
+                    guard let resource else {
+                        self.sendError(status: "404 Not Found")
+                        return
+                    }
+                    var headers = "HTTP/1.1 200 OK\r\n"
+                    headers += "Content-Type: \(resource.contentType)\r\n"
+                    headers += "Content-Length: \(resource.data.count)\r\n"
+                    headers += "Cache-Control: no-store\r\n"
+                    // Cast fetches HLS from script, which needs this. The URL's token and the
+                    // client lock remain the access control.
+                    headers += "Access-Control-Allow-Origin: *\r\n"
+                    headers += "Connection: close\r\n\r\n"
+                    var response = Data(headers.utf8)
+                    if !headOnly {
+                        response.append(resource.data)
+                    }
+                    self.connection.send(content: response, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
+                        self?.close()
+                    })
+                }
             }
         }
 
@@ -343,7 +419,7 @@ public final class TelegramCastLocalServer {
             if status.hasPrefix("405") {
                 headers += "Allow: GET, HEAD\r\n"
             }
-            if status.hasPrefix("416"), let size = self.server?.byteSource.size {
+            if status.hasPrefix("416"), let size = self.server?.byteSource?.size {
                 headers += "Content-Range: bytes */\(size)\r\n"
             }
             self.connection.send(content: Data((headers + "\r\n").utf8), contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in

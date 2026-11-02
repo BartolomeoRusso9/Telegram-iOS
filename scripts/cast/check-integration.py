@@ -23,6 +23,9 @@ REQUIRED = [
     ("Telegram/BUILD", "_googlecast._tcp"),
     ("Telegram/BUILD", "NSLocalNetworkUsageDescription"),
     ("Telegram/BUILD", "TelegramCastReceiverApplicationID"),
+    ("submodules/TelegramCallsUI/Sources/Components/MediaStreamComponent.swift", "LiveCastButtonComponent"),
+    ("submodules/TelegramCallsUI/Sources/PresentationGroupCall.swift", "func setCastPlaybackMuted"),
+    ("submodules/TelegramUI/Components/Stories/StoryContainerScreen/Sources/StoryItemSetContainerComponent.swift", "LiveCastButtonComponent"),
     ("build-system/Make/Make.py", "--adHocSigning"),
     ("submodules/TelegramUI/Sources/AppDelegate.swift", "sideloadAppContainerUrl()"),
 ]

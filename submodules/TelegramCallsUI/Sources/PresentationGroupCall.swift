@@ -3495,7 +3495,12 @@ public final class PresentationGroupCallImpl: PresentationGroupCall {
             ).start())
         }
     }
-    
+
+    // A stream's mixed audio plays on channel 1 (tgcalls StreamingMediaContext).
+    func setCastPlaybackMuted(_ isMuted: Bool) {
+        self.genericCallContext?.setVolume(ssrc: 1, volume: isMuted ? 0.0 : 1.0)
+    }
+
     public func setVolume(peerId: PeerId, volume: Int32, sync: Bool) {
         var found = false
         for (ssrc, mapping) in self.ssrcMapping {

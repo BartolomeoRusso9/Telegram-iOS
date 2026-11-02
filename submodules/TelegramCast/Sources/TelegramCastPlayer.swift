@@ -7,8 +7,10 @@ public struct TelegramCastLoadRequest {
     public let title: String?
     public let duration: Double?
     public let startPosition: Double
+    public let isLive: Bool
 
-    public init(url: URL, contentType: String, title: String?, duration: Double?, startPosition: Double) {
+    public init(url: URL, contentType: String, title: String?, duration: Double?, startPosition: Double, isLive: Bool = false) {
+        self.isLive = isLive
         self.url = url
         self.contentType = contentType
         self.title = title
@@ -71,7 +73,7 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
             metadata.setString(title, forKey: kGCKMetadataKeyTitle)
         }
         let builder = GCKMediaInformationBuilder(contentURL: request.url)
-        builder.streamType = .buffered
+        builder.streamType = request.isLive ? .live : .buffered
         builder.contentType = request.contentType
         builder.metadata = metadata
         if let duration = request.duration, duration > 0.0 {
@@ -81,7 +83,9 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
         let loadData = GCKMediaLoadRequestDataBuilder()
         loadData.mediaInformation = builder.build()
         loadData.autoplay = true
-        loadData.startTime = request.startPosition
+        if !request.isLive {
+            loadData.startTime = request.startPosition
+        }
 
         self.expectedURL = request.url
         self.lastKnownPosition = request.startPosition

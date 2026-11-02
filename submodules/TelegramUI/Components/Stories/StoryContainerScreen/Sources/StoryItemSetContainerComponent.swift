@@ -1,5 +1,6 @@
 import Foundation
 import LottieSettings
+import TelegramCallsUI
 import UIKit
 import Display
 import ComponentFlow
@@ -473,6 +474,7 @@ public final class StoryItemSetContainerComponent: Component {
         let moreButton = ComponentView<Empty>()
         var currentSoundButtonState: Bool?
         let soundButton = ComponentView<Empty>()
+        let castButton = ComponentView<Empty>()
         var privacyIcon: ComponentView<Empty>?
         var pictureInPictureIcon: ComponentView<Empty>?
         
@@ -4185,6 +4187,24 @@ public final class StoryItemSetContainerComponent: Component {
                 
                 if isVideo {
                     headerRightOffset -= soundButtonSize.width + 13.0
+                }
+
+                if let call = self.mediaStreamCall as? PresentationGroupCallImpl {
+                    let castButtonSize = self.castButton.update(
+                        transition: .immediate,
+                        component: AnyComponent(LiveCastButtonComponent(call: call, size: 32.0)),
+                        environment: {},
+                        containerSize: CGSize(width: 32.0, height: 32.0)
+                    )
+                    if let castButtonView = self.castButton.view {
+                        if castButtonView.superview == nil {
+                            self.controlsClippingView.addSubview(castButtonView)
+                        }
+                        transition.setFrame(view: castButtonView, frame: CGRect(origin: CGPoint(x: headerRightOffset - castButtonSize.width, y: 16.0), size: castButtonSize))
+                    }
+                    headerRightOffset -= castButtonSize.width + 8.0
+                } else if let castButtonView = self.castButton.view, castButtonView.superview != nil {
+                    castButtonView.removeFromSuperview()
                 }
                 
                 if let currentSoundButtonState = self.currentSoundButtonState, currentSoundButtonState != soundButtonState {

@@ -12,6 +12,8 @@ public enum TelegramCastMediaSource {
     case remote(url: URL, contentType: String)
     // Bytes only this device can read, served for the length of the session.
     case local(TelegramCastByteSource)
+    // A live stream's playlist and segments, served for the length of the session.
+    case live(TelegramCastDynamicSource, entryPath: String, contentType: String)
 }
 
 public struct TelegramCastMedia {
@@ -167,11 +169,31 @@ public final class TelegramCastSwitchController {
                     }
                 }
             }
+        case let .live(source, entryPath, contentType):
+            guard let server = TelegramCastLocalServer(dynamicSource: source) else {
+                self.cancelTransfer(reason: "server")
+                return
+            }
+            self.server = server
+            server.start(relativePath: entryPath) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self, self.transferId == transferId else {
+                        server.stop()
+                        return
+                    }
+                    switch result {
+                    case let .success(url):
+                        self.load(url: url, contentType: contentType, media: media, startPosition: 0.0, transferId: transferId, isLive: true)
+                    case .failure:
+                        self.cancelTransfer(reason: "network")
+                    }
+                }
+            }
         }
     }
 
-    private func load(url: URL, contentType: String, media: TelegramCastMedia, startPosition: Double, transferId: Int) {
-        let request = TelegramCastLoadRequest(url: url, contentType: contentType, title: media.title, duration: media.duration, startPosition: startPosition)
+    private func load(url: URL, contentType: String, media: TelegramCastMedia, startPosition: Double, transferId: Int, isLive: Bool = false) {
+        let request = TelegramCastLoadRequest(url: url, contentType: contentType, title: media.title, duration: media.duration, startPosition: startPosition, isLive: isLive)
         self.player.load(request) { [weak self] result in
             guard let self, self.transferId == transferId else {
                 return

@@ -186,6 +186,11 @@ Un aggiornamento va unito solo dopo questa lista.
   primo client valido accetta solo quell'indirizzo IP. Il traffico è HTTP in chiaro sulla LAN:
   chi osserva la rete può vedere il video, come per ogni sender Cast con media locali.
 - Se il video lascia lo schermo la trasmissione termina, perché i byte smettono di essere serviti.
+- **Live (sperimentale):** il pulsante compare nelle live di canale e in quelle delle storie.
+  `LiveCastButtonComponent` serve l'HLS generato da `ExternalMediaStreamingContext`, e il telefono
+  viene silenziato sul canale audio 1 quando la TV riproduce. Il formato dei segmenti non è
+  garantito compatibile con Cast: se il caricamento fallisce, l'avviso riporta il tipo del primo
+  segmento e la live continua sul telefono.
 - URL esterni con cookie, autenticazione, DRM o CORS restrittivo non sono supportati.
 - Testi di errore e avviso aggiornamento sono solo in inglese, per non toccare il sistema di localizzazione di Telegram.
 
