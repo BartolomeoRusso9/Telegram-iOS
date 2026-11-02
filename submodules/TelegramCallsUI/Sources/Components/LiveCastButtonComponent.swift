@@ -46,6 +46,26 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         return self.hasAudioTrack || self.partsHaveAudio == true
     }
 
+    // Telegram's playlist spans 21 seconds and a receiver may start anywhere near its beginning.
+    // Keeping the newest segments is what bounds how far behind the live it can start.
+    private static func shortenedPlaylist(_ playlist: String) -> String {
+        let keptSegments = 8
+        let lines = playlist.split(separator: "\n").map(String.init)
+        guard let firstSegment = lines.firstIndex(where: { $0.hasPrefix("#EXTINF") }) else {
+            return playlist
+        }
+        let segmentLines = Array(lines[firstSegment...])
+        let droppedSegments = max(0, segmentLines.count / 2 - keptSegments)
+        let header = lines[..<firstSegment].map { line -> String in
+            let prefix = "#EXT-X-MEDIA-SEQUENCE:"
+            if line.hasPrefix(prefix), let sequence = Int(line.dropFirst(prefix.count)) {
+                return "\(prefix)\(sequence + droppedSegments)"
+            }
+            return line
+        }
+        return (header + segmentLines.dropFirst(droppedSegments * 2)).joined(separator: "\n") + "\n"
+    }
+
     private static func lastPartIndex(playlist: String) -> Int? {
         for line in playlist.split(separator: "\n").reversed() {
             if let part = CastLiveStreamSource.parsePart(path: String(line)) {
@@ -74,6 +94,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
                 self.lock.lock()
                 self.hasAudioTrack = hasAudio
                 self.lock.unlock()
+                self.mark(audio.flatMap { "probe \(CastLiveStreamSource.describe($0))" } ?? "probe no audio")
             }
             let codecs = hasAudio ? "avc1.64001f,mp4a.40.2" : "avc1.64001f"
             let playlist = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH=3400000,RESOLUTION=1280x720,CODECS=\"\(codecs)\"\nhls_level_0.m3u8\n"
@@ -225,9 +246,7 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         } else if path == "hls_level_0.m3u8" {
             signal = self.context.playlistData(quality: 0)
             |> map { value -> (data: Data, contentType: String)? in
-                // Start near the live edge rather than at the receiver's default distance.
-                let playlist = value.replacingOccurrences(of: "#EXTM3U\n", with: "#EXTM3U\n#EXT-X-START:TIME-OFFSET=-6.0\n")
-                return (Data(playlist.utf8), playlistContentType)
+                return (Data(CastLiveStreamSource.shortenedPlaylist(value).utf8), playlistContentType)
             }
         } else if let part = CastLiveStreamSource.parsePart(path: path) {
             self.lock.lock()
@@ -299,6 +318,13 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         switchController.failed = { [weak self] reason in
             self?.presentFailure(reason: reason)
         }
+        switchController.stateUpdated = { [weak self] state in
+            if case .remote = state {
+                Queue.mainQueue().after(12.0, {
+                    self?.presentStatus()
+                })
+            }
+        }
         self.switchController = switchController
         switchController.transferIfSessionIsActive()
     }
@@ -316,6 +342,16 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         let source = CastLiveStreamSource(streamData: streamData)
         self.source = source
         return TelegramCastMedia(source: .live(source, entryPath: CastLiveStreamSource.entryPath, contentType: "application/x-mpegurl"), title: description.title, duration: nil)
+    }
+
+    private func presentStatus() {
+        guard let source = self.source, let call = self.call else {
+            return
+        }
+        let text = "stream \(call.isStream), tv audio \(source.receiverPlaysAudio)\n\(source.diagnostic)"
+        let alert = UIAlertController(title: "Cast status", message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        call.accountContext.sharedContext.mainWindow?.presentNative(alert)
     }
 
     private func presentFailure(reason: String) {
