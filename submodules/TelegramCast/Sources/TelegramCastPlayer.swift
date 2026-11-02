@@ -74,6 +74,10 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
         }
         let builder = GCKMediaInformationBuilder(contentURL: request.url)
         builder.streamType = request.isLive ? .live : .buffered
+        if request.isLive {
+            builder.hlsSegmentFormat = .TS
+            builder.hlsVideoSegmentFormat = .MPEG2_TS
+        }
         builder.contentType = request.contentType
         builder.metadata = metadata
         if let duration = request.duration, duration > 0.0 {

@@ -4,6 +4,7 @@ import ComponentFlow
 import SwiftSignalKit
 import TelegramCore
 import TelegramVoip
+import FFMpegBinding
 import AccountContext
 import TelegramCast
 
@@ -15,6 +16,8 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
     private let context = ExternalMediaStreamingContext(id: CallSessionInternalId(), rejoinNeeded: {})
     private let lock = NSLock()
     private var firstPartDescription: String?
+    private var baseIndex: Int?
+    private var remuxFailed = false
 
     init(streamData: OngoingGroupCallContext.AudioStreamData) {
         self.context.setAudioStreamData(audioStreamData: streamData)
@@ -26,7 +29,10 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         defer {
             self.lock.unlock()
         }
-        return self.firstPartDescription ?? "no segment was requested"
+        guard let firstPartDescription = self.firstPartDescription else {
+            return "no segment was requested"
+        }
+        return firstPartDescription + (self.remuxFailed ? ", remux failed" : ", remuxed to TS")
     }
 
     private static func parsePart(path: String) -> (quality: Int, index: Int)? {
@@ -57,6 +63,39 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         self.lock.unlock()
     }
 
+    // Each part is a complete MP4 file, which HLS cannot play as a segment: it is rewrapped as
+    // MPEG-TS without re-encoding, as SharedHLSServer does. The offset makes the timestamps of
+    // consecutive parts continuous. It counts from before the first request because the
+    // receiver may start anywhere in the playlist's window.
+    private func transportStream(from data: Data, index: Int) -> Data? {
+        self.lock.lock()
+        let baseIndex: Int
+        if let current = self.baseIndex {
+            baseIndex = current
+        } else {
+            baseIndex = index - 64
+            self.baseIndex = baseIndex
+        }
+        self.lock.unlock()
+
+        let sourceFile = EngineTempBox.shared.tempFile(fileName: "part.mp4")
+        let outputFile = EngineTempBox.shared.tempFile(fileName: "part.ts")
+        defer {
+            EngineTempBox.shared.dispose(sourceFile)
+            EngineTempBox.shared.dispose(outputFile)
+        }
+        guard (try? data.write(to: URL(fileURLWithPath: sourceFile.path))) != nil else {
+            return nil
+        }
+        guard FFMpegLiveMuxer.remux(sourceFile.path, to: outputFile.path, offsetSeconds: Double(index - baseIndex)) else {
+            self.lock.lock()
+            self.remuxFailed = true
+            self.lock.unlock()
+            return nil
+        }
+        return try? Data(contentsOf: URL(fileURLWithPath: outputFile.path))
+    }
+
     func resource(path: String, completion: @escaping ((data: Data, contentType: String)?) -> Void) -> () -> Void {
         let playlistContentType = "application/x-mpegurl"
         let signal: Signal<(data: Data, contentType: String)?, NoError>
@@ -72,12 +111,17 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
             }
         } else if let part = CastLiveStreamSource.parsePart(path: path) {
             signal = self.context.partData(index: part.index, quality: part.quality)
+            |> take(1)
+            |> deliverOn(Queue.concurrentDefaultQueue())
             |> map { [weak self] data -> (data: Data, contentType: String)? in
-                guard let data else {
+                guard let self, let data else {
                     return nil
                 }
-                self?.notePart(data)
-                return (data, "video/mp2t")
+                self.notePart(data)
+                guard let segment = self.transportStream(from: data, index: part.index) else {
+                    return nil
+                }
+                return (segment, "video/mp2t")
             }
         } else {
             completion(nil)
@@ -124,7 +168,7 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         let streamData = OngoingGroupCallContext.AudioStreamData(engine: self.call.accountContext.engine, callId: description.id, accessHash: description.accessHash, isExternalStream: self.call.isStream)
         let source = CastLiveStreamSource(streamData: streamData)
         self.source = source
-        return TelegramCastMedia(source: .live(source, entryPath: "master.m3u8", contentType: "application/x-mpegurl"), title: description.title, duration: nil)
+        return TelegramCastMedia(source: .live(source, entryPath: "hls_level_0.m3u8", contentType: "application/x-mpegurl"), title: description.title, duration: nil)
     }
 
     private func presentFailure() {
