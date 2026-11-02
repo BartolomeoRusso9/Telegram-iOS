@@ -27,6 +27,15 @@ http_archive(
     build_file_content = _WASI_SDK_BUILD,
 )
 
+# 4.8.4 is the last release that supports iOS 15, the app's minimum (docs/google-cast/README.md).
+http_archive(
+    name = "google_cast_sdk",
+    urls = ["https://dl.google.com/dl/chromecast/sdk/ios/GoogleCastSDK-ios-4.8.4_static.zip"],
+    sha256 = "964a3b2103b68bfa9d62e1ce39fd591ebadd0093086c0c340efcede00d356804",
+    strip_prefix = "GoogleCastSDK-ios-4.8.4_static_xcframework",
+    build_file = "//third-party/googlecast:GoogleCast.BUILD",
+)
+
 bazel_dep(name = "bazel_features", version = "1.51.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "platforms", version = "1.1.0")

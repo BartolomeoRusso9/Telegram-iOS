@@ -84,3 +84,6 @@ tools/sim-watcher/dist/
 submodules/TelegramApi/Sources/SwiftPMGenerated/
 submodules/TelegramApi/ObjC/SwiftPMGenerated/
 submodules/TelegramApi/Tests/SwiftPMGenerated/
+
+# Built IPA and archive (scripts/cast/build-ipa.sh)
+/output/

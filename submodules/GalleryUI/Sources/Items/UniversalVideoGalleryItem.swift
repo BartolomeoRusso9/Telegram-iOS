@@ -957,7 +957,8 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     private var settingsButtonState: ChatItemGalleryFooterContentNode.SettingsButtonState?
 
     private var pictureInPictureButton: UIBarButtonItem?
-    
+    private var castController: CastGalleryItemController?
+
     private var requiresDownload = false
     
     private(set) var item: UniversalVideoGalleryItem?
@@ -1994,8 +1995,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                     quality: nil
                 )
             }
+            self.setupCastController(item: item, videoNode: videoNode, barButtonItems: &barButtonItems)
             self._rightBarButtonItems.set(.single(barButtonItems))
-        
+
             videoNode.playbackCompleted = { [weak self, weak videoNode] in
                 Queue.mainQueue().async {
                     item.playbackCompleted()
@@ -2292,9 +2294,29 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
         }
     }
     
+    private func setupCastController(item: UniversalVideoGalleryItem, videoNode: UniversalVideoNode, barButtonItems: inout [UIBarButtonItem]) {
+        self.castController = nil
+        var isProtected = item.isSecret || item.peerIsCopyProtected || item.hideControls
+        var title: String?
+        if case let .message(message, _) = item.contentInfo {
+            isProtected = isProtected || message.isCopyProtected() || message.paidContent != nil || message.adAttribute != nil
+            title = message.text.isEmpty ? nil : message.text
+        }
+        guard !isProtected, CastGalleryItemController.canCast(content: item.content) else {
+            return
+        }
+        let castController = CastGalleryItemController(context: item.context, content: item.content, title: title, videoNode: videoNode, present: { [weak self] controller in
+            self?.item?.present(controller, ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
+        })
+        self.castController = castController
+        barButtonItems.insert(UIBarButtonItem(customDisplayNode: castController.buttonNode)!, at: 0)
+        castController.setIsVisible(self._isVisible ?? false)
+    }
+
     override func visibilityUpdated(isVisible: Bool) {
         super.visibilityUpdated(isVisible: isVisible)
-        
+        self.castController?.setIsVisible(isVisible)
+
         if self._isVisible != isVisible {
             let hadPreviousValue = self._isVisible != nil
             self._isVisible = isVisible

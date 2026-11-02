@@ -1,0 +1,94 @@
+name: Sync with official Telegram-iOS
+
+# Looks for new upstream commits and proposes them as a pull request. It never merges by itself
+# and never pushes to the customized branch: cast-build.yml must pass and a person must merge.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM_URL: https://github.com/TelegramMessenger/Telegram-iOS.git
+  UPSTREAM_BRANCH: master
+  CUSTOM_BRANCH: cast/main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CUSTOM_BRANCH }}
+          fetch-depth: 0
+          # A pull request opened with GITHUB_TOKEN starts no workflows, so cast-build.yml
+          # needs a token of its own to run on it.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Fetch upstream
+        id: upstream
+        run: |
+          git config user.name "telegram-cast-sync"
+          git config user.email "telegram-cast-sync@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-recurse-submodules upstream "$UPSTREAM_BRANCH"
+          SHA="$(git rev-parse --short=10 "upstream/$UPSTREAM_BRANCH")"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "branch=sync/upstream-$SHA" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --heads origin "sync/upstream-$SHA" > /dev/null; then
+            echo "known=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge into a new branch
+        id: merge
+        if: steps.upstream.outputs.known != 'true'
+        env:
+          CONFLICTS_FILE: ${{ runner.temp }}/conflicts.txt
+        run: |
+          set +e
+          bash scripts/cast/upstream-merge.sh "upstream/$UPSTREAM_BRANCH" "${{ steps.upstream.outputs.branch }}"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Report conflicts
+        if: steps.merge.outputs.status == '4'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Upstream \`${{ steps.upstream.outputs.sha }}\` conflicts with \`$CUSTOM_BRANCH\`. Nothing was changed."
+            echo
+            echo "Conflicted paths:"
+            sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+            echo
+            echo "See docs/google-cast/README.md, \"Resolving a conflict\"."
+          } > "$RUNNER_TEMP/body.md"
+          gh issue create --title "Upstream sync conflict: ${{ steps.upstream.outputs.sha }}" --body-file "$RUNNER_TEMP/body.md"
+          exit 1
+
+      - name: Check the integration
+        if: steps.merge.outputs.status == '0'
+        run: python3 scripts/cast/check-integration.py
+
+      - name: Open the pull request
+        if: steps.merge.outputs.status == '0'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+        run: |
+          BRANCH="${{ steps.upstream.outputs.branch }}"
+          git push origin "$BRANCH"
+          APP_VERSION="$(python3 -c "import json; print(json.load(open('versions.json'))['app'])")"
+          LOG="$(git log --oneline --no-merges "origin/$CUSTOM_BRANCH..upstream/$UPSTREAM_BRANCH" | head -40)"
+          {
+            echo "Official Telegram $APP_VERSION at \`${{ steps.upstream.outputs.sha }}\`."
+            echo
+            echo "Merge only after **Cast build** passes and the manual list in docs/google-cast/README.md is done on a real Cast device: CI has no Cast device."
+            echo
+            echo '```'
+            echo "$LOG"
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          gh pr create --base "$CUSTOM_BRANCH" --head "$BRANCH" --title "Sync with official Telegram $APP_VERSION (${{ steps.upstream.outputs.sha }})" --body-file "$RUNNER_TEMP/body.md"

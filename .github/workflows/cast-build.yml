@@ -1,0 +1,111 @@
+name: Cast build
+
+# Every pull request gets the integration checks and a simulator build. A signed IPA is built
+# only from cast/main, or on request, and only when the signing secrets exist. Nothing here
+# publishes to users: the artifact is kept in the run for a person to distribute.
+on:
+  pull_request:
+    branches: [cast/main]
+  push:
+    branches: [cast/main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cast-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/cast/check-integration.py
+
+  build:
+    needs: checks
+    # A full build needs far more disk than a hosted runner offers, so set the repository
+    # variable CAST_BUILD_RUNNER to a self-hosted Mac label (see docs/google-cast/README.md).
+    runs-on: ${{ vars.CAST_BUILD_RUNNER || 'macos-latest' }}
+    timeout-minutes: 350
+    env:
+      HAS_SIGNING: ${{ secrets.SIGNING_ARCHIVE_BASE64 != '' && secrets.SIGNING_CERTIFICATE_PASSWORD != '' && secrets.TELEGRAM_API_ID != '' && secrets.TELEGRAM_API_HASH != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select the Xcode upstream pins
+        run: |
+          VERSION="$(python3 -c "import json; print(json.load(open('versions.json'))['xcode'])")"
+          for APP in "/Applications/Xcode_$VERSION.app" "/Applications/Xcode.app"; do
+            if [ -d "$APP" ] && DEVELOPER_DIR="$APP/Contents/Developer" xcodebuild -version | grep -q "^Xcode $VERSION"; then
+              echo "DEVELOPER_DIR=$APP/Contents/Developer" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::This runner has no Xcode $VERSION, which versions.json requires"
+          exit 1
+
+      - name: Local server test
+        run: bash scripts/cast/test-local-server.sh
+
+      - name: Simulator build
+        env:
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          json.dump({
+              "bundle_id": "ph.telegra.Telegraph", "team_id": "C67CF9S4VU",
+              "api_id": os.environ.get("API_ID") or "1",
+              "api_hash": os.environ.get("API_HASH") or "0" * 32,
+              "app_center_id": "0", "is_internal_build": "true", "is_appstore_build": "false",
+              "appstore_id": "0", "app_specific_url_scheme": "tg", "premium_iap_product_id": "",
+              "enable_siri": False, "enable_icloud": False,
+          }, open("/tmp/compile-configuration.json", "w"))
+          PY
+          python3 build-system/Make/Make.py --cacheDir="$HOME/telegram-bazel-cache" build \
+            --disableProvisioningProfiles \
+            --configurationPath=/tmp/compile-configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --buildNumber="${{ github.run_number }}" --configuration=debug_sim_arm64
+          rm -f /tmp/compile-configuration.json
+
+      - name: Signed IPA
+        if: env.HAS_SIGNING == 'true' && (github.ref == 'refs/heads/cast/main' || github.event_name == 'workflow_dispatch')
+        env:
+          SIGNING_ARCHIVE_BASE64: ${{ secrets.SIGNING_ARCHIVE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+          BUILD_CONFIGURATION_JSON: ${{ secrets.BUILD_CONFIGURATION_JSON }}
+        run: |
+          WORK="$RUNNER_TEMP/signing"
+          mkdir -p "$WORK"
+          echo "$SIGNING_ARCHIVE_BASE64" | base64 --decode | tar -xz -C "$WORK"
+          printf '%s' "$BUILD_CONFIGURATION_JSON" > "$WORK/configuration.json"
+          KEYCHAIN="$RUNNER_TEMP/cast-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$WORK/certs/distribution.p12" -k "$KEYCHAIN" -P "$SIGNING_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          bash scripts/cast/build-ipa.sh --configuration "$WORK/configuration.json" --signing "$WORK" --build-number "${{ github.run_number }}"
+
+      - name: Keep the IPA
+        if: env.HAS_SIGNING == 'true' && (github.ref == 'refs/heads/cast/main' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-Cast-${{ github.run_number }}
+          path: output/Telegram-Cast.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/signing"
+          security delete-keychain "$RUNNER_TEMP/cast-signing.keychain-db" 2>/dev/null || true

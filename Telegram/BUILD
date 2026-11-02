@@ -1921,6 +1921,7 @@ ios_application(
         ":VersionInfoPlist",
         ":RequiredDeviceCapabilitiesPlist",
         ":UrlTypesInfoPlist",
+        ":GoogleCastInfoPlist",
     ],
     app_icons = [ ":{}_icon".format(name) for name in composer_icon_folders ],
     alternate_icons = [
@@ -1929,6 +1930,13 @@ ios_application(
     resources = [
         ":LaunchScreen",
         #":DefaultAppIcon",
+        "@google_cast_sdk//:GoogleCastCoreResources",
+        "@google_cast_sdk//:GoogleCastOptionalUIResources",
+        "@google_cast_sdk//:GoogleCastUIResources",
+        "@google_cast_sdk//:GoogleSansBold",
+        "@google_cast_sdk//:GoogleSansMedium",
+        "@google_cast_sdk//:GoogleSansRegular",
+        "@google_cast_sdk//:MaterialDialogs",
     ],
     frameworks = [
         ":MtProtoKitFramework",
@@ -2078,4 +2086,32 @@ filegroup(
         "Telegram-iOS/en.lproj/Localizable.strings",
     ],
     visibility = ["//submodules/ChatListUI:__pkg__"],
+)
+
+# The receiver the Cast context uses: CC1AD845 is Google's Default Media Receiver. A custom
+# receiver needs its own Application ID here (docs/google-cast/README.md). The update feed is
+# an https URL, empty to make no request.
+telegram_cast_receiver_app_id = "CC1AD845"
+telegram_cast_update_feed_url = ""
+
+plist_fragment(
+    name = "GoogleCastInfoPlist",
+    extension = "plist",
+    template =
+    """
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_googlecast._tcp</string>
+        <string>_{receiver}._googlecast._tcp</string>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Telegram uses the local network to find Cast devices and to send videos to them.</string>
+    <key>TelegramCastReceiverApplicationID</key>
+    <string>{receiver}</string>
+    <key>TelegramCastUpdateFeedURL</key>
+    <string>{feed}</string>
+    """.format(
+        receiver = telegram_cast_receiver_app_id,
+        feed = telegram_cast_update_feed_url,
+    )
 )

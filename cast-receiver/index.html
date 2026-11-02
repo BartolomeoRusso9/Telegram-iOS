@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+  Custom Web Receiver for Telegram Cast. Host it over HTTPS and register its URL in the Google
+  Cast SDK Developer Console: that gives the Application ID to set in Telegram/BUILD.
+  It plays what the sender loads (MP4 and HLS through the framework's player). The LOAD
+  interceptor is where a token or a stream-specific rule would go; it adds none today.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Telegram Cast Receiver</title>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <style>
+    body { margin: 0; background: #000; }
+    cast-media-player { --splash-image: none; }
+  </style>
+</head>
+<body>
+  <cast-media-player></cast-media-player>
+  <script>
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const playerManager = context.getPlayerManager();
+
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.LOAD,
+      (request) => {
+        if (!request.media || !(request.media.contentUrl || request.media.contentId)) {
+          const error = new cast.framework.messages.ErrorData(cast.framework.messages.ErrorType.LOAD_FAILED);
+          error.reason = cast.framework.messages.ErrorReason.INVALID_REQUEST;
+          return error;
+        }
+        return request;
+      }
+    );
+
+    context.start();
+  </script>
+</body>
+</html>

@@ -17,7 +17,7 @@ import AVFoundation
 public final class SystemVideoContent: UniversalVideoContent {
     public let id: AnyHashable
     let userLocation: MediaResourceUserLocation
-    let url: String
+    public let url: String
     let imageReference: ImageMediaReference
     public let dimensions: CGSize
     public let duration: Double
