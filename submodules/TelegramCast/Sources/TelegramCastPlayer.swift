@@ -38,8 +38,12 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
     }
 
     private static let confirmationTimeout: Double = 20.0
+    // A live HLS stream must fill the receiver's buffer before it reports playing.
+    private static let liveConfirmationTimeout: Double = 45.0
 
     public private(set) var state: PlaybackState = .idle
+    // Why the last load failed, for the error shown to the user.
+    public private(set) var failureDetail: String?
     public private(set) var lastKnownPosition: Double = 0.0
     public var stateUpdated: ((PlaybackState) -> Void)?
 
@@ -95,8 +99,14 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
         self.lastKnownPosition = request.startPosition
         self.confirmation = completion
         self.update(state: .loading)
-        self.confirmationTimer = Timer.scheduledTimer(withTimeInterval: TelegramCastPlayer.confirmationTimeout, repeats: false) { [weak self] _ in
-            self?.finishConfirmation(.failure(.timedOut))
+        self.failureDetail = nil
+        let timeout = request.isLive ? TelegramCastPlayer.liveConfirmationTimeout : TelegramCastPlayer.confirmationTimeout
+        self.confirmationTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.failureDetail = "timed out while \(self.state)"
+            self.finishConfirmation(.failure(.timedOut))
         }
 
         let gckRequest = client.loadMedia(with: loadData.build())
@@ -181,6 +191,7 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
             if self.confirmation != nil {
                 // Still idle before the load is picked up, unless the receiver gave a reason.
                 if mediaStatus.idleReason == .error || mediaStatus.idleReason == .cancelled {
+                    self.failureDetail = "receiver idle, reason \(mediaStatus.idleReason.rawValue)"
                     self.update(state: .idle)
                     self.finishConfirmation(.failure(.loadFailed(cancelled: false)))
                 }
@@ -198,6 +209,7 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
         guard request === self.loadRequest else {
             return
         }
+        self.failureDetail = "load error \(error.code)"
         self.update(state: .idle)
         // GCKErrorCodeCancelled includes the user declining the Cast terms; the SDK forbids
         // retrying automatically after it.

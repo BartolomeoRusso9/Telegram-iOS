@@ -238,6 +238,7 @@ public final class TelegramCastLocalServer {
         case error(status: String)
         case body(status: String, range: Range<Int64>?, headOnly: Bool)
         case dynamic(path: String, source: TelegramCastDynamicSource, headOnly: Bool)
+        case preflight
     }
 
     fileprivate func response(method: String, target: String, rangeHeader: String?, connection: NWConnection) -> Response {
@@ -250,6 +251,10 @@ public final class TelegramCastLocalServer {
         }
         guard authorized else {
             return .error(status: "404 Not Found")
+        }
+        // A receiver's script may ask permission first when it sends custom headers.
+        if method == "OPTIONS" && self.dynamicSource != nil {
+            return .preflight
         }
         // The URL is a bearer secret sent in clear on the LAN, so the first device to use it
         // keeps it: a client that sniffed the URL cannot then read the video.
@@ -378,6 +383,11 @@ public final class TelegramCastLocalServer {
                 }
             case let .dynamic(path, source, headOnly):
                 self.sendDynamic(path: path, source: source, headOnly: headOnly)
+            case .preflight:
+                let headers = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                self.connection.send(content: Data(headers.utf8), contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
+                    self?.close()
+                })
             }
         }
 

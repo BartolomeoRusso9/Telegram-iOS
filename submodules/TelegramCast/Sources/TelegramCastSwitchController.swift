@@ -206,7 +206,7 @@ public final class TelegramCastSwitchController {
                 if case .loadFailed(cancelled: true) = error {
                     self.cancelTransfer(reason: nil)
                 } else {
-                    self.cancelTransfer(reason: "load")
+                    self.cancelTransfer(reason: self.player.failureDetail ?? "load")
                 }
             }
         }

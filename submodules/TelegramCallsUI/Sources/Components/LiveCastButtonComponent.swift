@@ -5,6 +5,7 @@ import SwiftSignalKit
 import TelegramCore
 import TelegramVoip
 import FFMpegBinding
+import UniversalMediaPlayer
 import AccountContext
 import TelegramCast
 
@@ -18,6 +19,10 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
     private var firstPartDescription: String?
     private var baseIndex: Int?
     private var remuxFailed = false
+    private var mediaDescription: String?
+    private var playlistsServed = 0
+    private var partsServed = 0
+    private var partsFailed = 0
 
     init(streamData: OngoingGroupCallContext.AudioStreamData) {
         self.context.setAudioStreamData(audioStreamData: streamData)
@@ -29,10 +34,11 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         defer {
             self.lock.unlock()
         }
+        let requests = "playlists \(self.playlistsServed), parts \(self.partsServed), failed \(self.partsFailed)"
         guard let firstPartDescription = self.firstPartDescription else {
-            return "no segment was requested"
+            return "no segment was requested; \(requests)"
         }
-        return firstPartDescription + (self.remuxFailed ? ", remux failed" : ", remuxed to TS")
+        return firstPartDescription + (self.remuxFailed ? ", remux failed" : ", remuxed to TS") + "\n\(self.mediaDescription ?? "unknown codecs")\n\(requests)"
     }
 
     private static func parsePart(path: String) -> (quality: Int, index: Int)? {
@@ -87,6 +93,15 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         guard (try? data.write(to: URL(fileURLWithPath: sourceFile.path))) != nil else {
             return nil
         }
+        self.lock.lock()
+        let needsMediaDescription = self.mediaDescription == nil
+        self.lock.unlock()
+        if needsMediaDescription, let info = extractFFMpegMediaInfo(path: sourceFile.path) {
+            let description = "video \(info.video?.codecName ?? "none") start \(info.video?.startTime.seconds ?? 0.0), audio \(info.audio?.codecName ?? "none")"
+            self.lock.lock()
+            self.mediaDescription = description
+            self.lock.unlock()
+        }
         guard FFMpegLiveMuxer.remux(sourceFile.path, to: outputFile.path, offsetSeconds: Double(index - baseIndex)) else {
             self.lock.lock()
             self.remuxFailed = true
@@ -129,7 +144,18 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         }
         let disposable = (signal
         |> take(1)
-        |> timeout(CastLiveStreamSource.partTimeout, queue: Queue.concurrentDefaultQueue(), alternate: .single(nil))).start(next: { value in
+        |> timeout(CastLiveStreamSource.partTimeout, queue: Queue.concurrentDefaultQueue(), alternate: .single(nil))).start(next: { [weak self] value in
+            if let self {
+                self.lock.lock()
+                if path.hasSuffix(".m3u8") {
+                    self.playlistsServed += 1
+                } else if value != nil {
+                    self.partsServed += 1
+                } else {
+                    self.partsFailed += 1
+                }
+                self.lock.unlock()
+            }
             completion(value)
         })
         return {
@@ -149,8 +175,8 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         let switchController = TelegramCastSwitchController(playback: self, mediaProvider: { [weak self] in
             return self?.media()
         })
-        switchController.failed = { [weak self] _ in
-            self?.presentFailure()
+        switchController.failed = { [weak self] reason in
+            self?.presentFailure(reason: reason)
         }
         self.switchController = switchController
         switchController.transferIfSessionIsActive()
@@ -171,8 +197,8 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         return TelegramCastMedia(source: .live(source, entryPath: "hls_level_0.m3u8", contentType: "application/x-mpegurl"), title: description.title, duration: nil)
     }
 
-    private func presentFailure() {
-        let text = "This live could not be played on the Cast device. It keeps playing here.\n\n\(self.source?.diagnostic ?? "no stream")"
+    private func presentFailure(reason: String) {
+        let text = "This live could not be played on the Cast device. It keeps playing here.\n\n\(reason)\n\(self.source?.diagnostic ?? "no stream")"
         let alert = UIAlertController(title: nil, message: text, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         self.call.accountContext.sharedContext.mainWindow?.presentNative(alert)
