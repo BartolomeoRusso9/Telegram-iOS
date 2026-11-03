@@ -49,7 +49,8 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
     // Telegram's playlist spans 21 seconds and a receiver may start anywhere near its beginning.
     // Keeping the newest segments is what bounds how far behind the live it can start.
     private static func shortenedPlaylist(_ playlist: String) -> String {
-        let keptSegments = 8
+        // Five one-second segments: fewer leave the receiver too little to buffer against.
+        let keptSegments = 5
         let lines = playlist.split(separator: "\n").map(String.init)
         guard let firstSegment = lines.firstIndex(where: { $0.hasPrefix("#EXTINF") }) else {
             return playlist
@@ -327,13 +328,6 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         switchController.failed = { [weak self] reason in
             self?.presentFailure(reason: reason)
         }
-        switchController.stateUpdated = { [weak self] state in
-            if case .remote = state {
-                Queue.mainQueue().after(12.0, {
-                    self?.presentStatus()
-                })
-            }
-        }
         self.switchController = switchController
         switchController.transferIfSessionIsActive()
     }
@@ -351,16 +345,6 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         let source = CastLiveStreamSource(streamData: streamData)
         self.source = source
         return TelegramCastMedia(source: .live(source, entryPath: CastLiveStreamSource.entryPath, contentType: "application/x-mpegurl"), title: description.title, duration: nil)
-    }
-
-    private func presentStatus() {
-        guard let source = self.source, let call = self.call else {
-            return
-        }
-        let text = "stream \(call.isStream), tv audio \(source.receiverPlaysAudio)\n\(source.diagnostic)"
-        let alert = UIAlertController(title: "Cast status", message: text, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        call.accountContext.sharedContext.mainWindow?.presentNative(alert)
     }
 
     private func presentFailure(reason: String) {
