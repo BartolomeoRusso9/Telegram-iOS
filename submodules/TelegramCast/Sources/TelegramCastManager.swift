@@ -52,6 +52,9 @@ public final class TelegramCastManager: NSObject, GCKSessionManagerListener {
         options.physicalVolumeButtonsWillControlDeviceVolume = true
         options.startDiscoveryAfterFirstTapOnCastButton = true
         options.stopReceiverApplicationWhenEndingSession = true
+        // A live is served from this device and keeps running in the background, so the
+        // session must too: a suspended session reads as finished and stops the local server.
+        options.suspendSessionsWhenBackgrounded = false
         GCKCastContext.setSharedInstanceWith(options)
         GCKCastContext.sharedInstance().useDefaultExpandedMediaControls = true
         GCKCastContext.sharedInstance().sessionManager.add(self)
