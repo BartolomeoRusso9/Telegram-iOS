@@ -41,6 +41,15 @@ public final class TelegramCastSwitchController {
     public private(set) var state: State = .local
     public var stateUpdated: ((State) -> Void)?
     public var failed: ((String) -> Void)?
+    // Called with the count each time a stalled live is reloaded on the receiver.
+    public var stalled: ((Int) -> Void)? {
+        get {
+            return self.player.stalled
+        }
+        set {
+            self.player.stalled = newValue
+        }
+    }
 
     private weak var playback: TelegramCastLocalPlayback?
     private let mediaProvider: () -> TelegramCastMedia?

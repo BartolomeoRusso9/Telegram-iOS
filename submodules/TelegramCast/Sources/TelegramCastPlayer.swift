@@ -44,6 +44,16 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
     public private(set) var state: PlaybackState = .idle
     // Why the last load failed, for the error shown to the user.
     public private(set) var failureDetail: String?
+    // Called with the count each time a stalled live is reloaded.
+    public var stalled: ((Int) -> Void)?
+
+    // A live stuck buffering for this long is reloaded at its live edge.
+    private static let liveStallTimeout: Double = 20.0
+    private static let maxLiveReloads = 20
+    private var currentRequest: TelegramCastLoadRequest?
+    private var bufferingSince: Date?
+    private var reloadCount = 0
+    private var stallTimer: Timer?
     public private(set) var lastKnownPosition: Double = 0.0
     public var stateUpdated: ((PlaybackState) -> Void)?
 
@@ -55,7 +65,46 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
 
     deinit {
         self.confirmationTimer?.invalidate()
+        self.stallTimer?.invalidate()
         self.client?.remove(self)
+    }
+
+    private func buildLoadData(_ request: TelegramCastLoadRequest) -> GCKMediaLoadRequestData {
+        let metadata = GCKMediaMetadata(metadataType: .movie)
+        if let title = request.title, !title.isEmpty {
+            metadata.setString(title, forKey: kGCKMetadataKeyTitle)
+        }
+        let builder = GCKMediaInformationBuilder(contentURL: request.url)
+        builder.streamType = request.isLive ? .live : .buffered
+        builder.contentType = request.contentType
+        builder.metadata = metadata
+        if let duration = request.duration, duration > 0.0 {
+            builder.streamDuration = duration
+        }
+        let loadData = GCKMediaLoadRequestDataBuilder()
+        loadData.mediaInformation = builder.build()
+        loadData.autoplay = true
+        if !request.isLive {
+            loadData.startTime = request.startPosition
+        }
+        return loadData.build()
+    }
+
+    // Only lives are reloaded: a file that stops loading has a cause a reload does not fix.
+    private func reloadIfStalled(force: Bool) -> Bool {
+        guard let request = self.currentRequest, request.isLive, self.confirmation == nil, let client = self.client, self.reloadCount < TelegramCastPlayer.maxLiveReloads else {
+            return false
+        }
+        if !force {
+            guard let bufferingSince = self.bufferingSince, Date().timeIntervalSince(bufferingSince) >= TelegramCastPlayer.liveStallTimeout else {
+                return false
+            }
+        }
+        self.reloadCount += 1
+        self.bufferingSince = Date()
+        _ = client.loadMedia(with: self.buildLoadData(request))
+        self.stalled?(self.reloadCount)
+        return true
     }
 
     // Completes only once the receiver reports this media as playing, not when it accepts the
@@ -72,25 +121,6 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
         self.client = client
         client.add(self)
 
-        let metadata = GCKMediaMetadata(metadataType: .movie)
-        if let title = request.title, !title.isEmpty {
-            metadata.setString(title, forKey: kGCKMetadataKeyTitle)
-        }
-        let builder = GCKMediaInformationBuilder(contentURL: request.url)
-        builder.streamType = request.isLive ? .live : .buffered
-        builder.contentType = request.contentType
-        builder.metadata = metadata
-        if let duration = request.duration, duration > 0.0 {
-            builder.streamDuration = duration
-        }
-
-        let loadData = GCKMediaLoadRequestDataBuilder()
-        loadData.mediaInformation = builder.build()
-        loadData.autoplay = true
-        if !request.isLive {
-            loadData.startTime = request.startPosition
-        }
-
         self.expectedURL = request.url
         self.lastKnownPosition = request.startPosition
         self.confirmation = completion
@@ -105,9 +135,18 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
             self.finishConfirmation(.failure(.timedOut))
         }
 
-        let gckRequest = client.loadMedia(with: loadData.build())
+        let gckRequest = client.loadMedia(with: self.buildLoadData(request))
         gckRequest.delegate = self
         self.loadRequest = gckRequest
+        self.currentRequest = request
+        self.reloadCount = 0
+        self.bufferingSince = nil
+        self.stallTimer?.invalidate()
+        if request.isLive {
+            self.stallTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+                _ = self?.reloadIfStalled(force: false)
+            }
+        }
     }
 
     public func play() {
@@ -131,6 +170,9 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
 
     public func detach() {
         self.finishConfirmation(.failure(.loadFailed(cancelled: true)))
+        self.stallTimer?.invalidate()
+        self.stallTimer = nil
+        self.currentRequest = nil
         self.client?.remove(self)
         self.client = nil
         self.expectedURL = nil
@@ -173,13 +215,18 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
         }
         switch mediaStatus.playerState {
         case .playing:
+            self.bufferingSince = nil
             self.lastKnownPosition = mediaStatus.streamPosition
             self.update(state: .playing)
             self.finishConfirmation(.success(()))
         case .paused:
+            self.bufferingSince = nil
             self.lastKnownPosition = mediaStatus.streamPosition
             self.update(state: .paused)
         case .buffering:
+            if self.bufferingSince == nil {
+                self.bufferingSince = Date()
+            }
             self.update(state: .buffering)
         case .loading:
             self.update(state: .loading)
@@ -192,6 +239,10 @@ public final class TelegramCastPlayer: NSObject, GCKRemoteMediaClientListener, G
                     self.finishConfirmation(.failure(.loadFailed(cancelled: false)))
                 }
             } else if self.state != .idle {
+                // A live that stops on an error is reloaded before it counts as finished.
+                if mediaStatus.idleReason == .error, self.reloadIfStalled(force: true) {
+                    break
+                }
                 self.update(state: .finished)
             }
         case .unknown:

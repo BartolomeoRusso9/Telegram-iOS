@@ -231,9 +231,11 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
     // The first few steps of serving a segment, with their time.
     private func mark(_ stage: String) {
         self.lock.lock()
-        if self.stages.count < 12 {
-            let elapsed = CFAbsoluteTimeGetCurrent() - (self.firstRequestTimestamp ?? 0.0)
-            self.stages.append("\(stage) +\(Int(elapsed * 1000.0))")
+        // The most recent steps: a stall shows what was happening just before it.
+        let elapsed = CFAbsoluteTimeGetCurrent() - (self.firstRequestTimestamp ?? 0.0)
+        self.stages.append("\(stage) +\(Int(elapsed * 1000.0))")
+        if self.stages.count > 12 {
+            self.stages.removeFirst(self.stages.count - 12)
         }
         self.lock.unlock()
     }
@@ -328,6 +330,11 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         switchController.failed = { [weak self] reason in
             self?.presentFailure(reason: reason)
         }
+        switchController.stalled = { [weak self] count in
+            if count == 1 {
+                self?.presentStall()
+            }
+        }
         self.switchController = switchController
         switchController.transferIfSessionIsActive()
     }
@@ -345,6 +352,13 @@ private final class CastLiveStreamController: TelegramCastLocalPlayback {
         let source = CastLiveStreamSource(streamData: streamData)
         self.source = source
         return TelegramCastMedia(source: .live(source, entryPath: CastLiveStreamSource.entryPath, contentType: "application/x-mpegurl"), title: description.title, duration: nil)
+    }
+
+    private func presentStall() {
+        let text = "The Cast device stopped receiving the live and it was restarted. Further restarts happen without this message.\n\n\(self.source?.diagnostic ?? "no stream")"
+        let alert = UIAlertController(title: nil, message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        self.call?.accountContext.sharedContext.mainWindow?.presentNative(alert)
     }
 
     private func presentFailure(reason: String) {

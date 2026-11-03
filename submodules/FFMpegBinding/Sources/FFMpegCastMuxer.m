@@ -289,8 +289,11 @@ static const int kCastAudioSampleRate = 48000;
     }
 
     int added = audioPath ? [self queueAudioFromPath:audioPath] : 0;
+    // Exactly one second per segment, or audio drifts from the video it was paired with.
     if (added < kCastAudioSampleRate) {
         [self queueSilenceSamples:kCastAudioSampleRate - added];
+    } else if (added > kCastAudioSampleRate) {
+        av_audio_fifo_drain(_fifo, added - kCastAudioSampleRate);
     }
     [self encodeQueuedAudioTo:output stream:audioOutput];
 
