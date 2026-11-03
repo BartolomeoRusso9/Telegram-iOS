@@ -66,6 +66,15 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         return (header + segmentLines.dropFirst(droppedSegments * 2)).joined(separator: "\n") + "\n"
     }
 
+    // Audio parts start with Telegram's own header (0xa12e810d, the container name, ...) before
+    // the MP4 file. The header's length varies with its fields, so the file is found by its first box.
+    static func strippingPartHeader(_ data: Data) -> Data {
+        guard let range = data.range(of: Data("ftyp".utf8)), range.lowerBound - data.startIndex >= 4 else {
+            return data
+        }
+        return data.subdata(in: (range.lowerBound - 4) ..< data.endIndex)
+    }
+
     private static func lastPartIndex(playlist: String) -> Int? {
         for line in playlist.split(separator: "\n").reversed() {
             if let part = CastLiveStreamSource.parsePart(path: String(line)) {
@@ -187,12 +196,12 @@ private final class CastLiveStreamSource: TelegramCastDynamicSource {
         let offsetSeconds = Double(index - baseIndex)
         let isMuxed: Bool
         if hasAudioTrack {
-            let audioFile = EngineTempBox.shared.tempFile(fileName: "part.ogg")
+            let audioFile = EngineTempBox.shared.tempFile(fileName: "part-audio.mp4")
             defer {
                 EngineTempBox.shared.dispose(audioFile)
             }
             var audioPath: String?
-            if let audio, (try? audio.write(to: URL(fileURLWithPath: audioFile.path))) != nil {
+            if let audio, (try? CastLiveStreamSource.strippingPartHeader(audio).write(to: URL(fileURLWithPath: audioFile.path))) != nil {
                 audioPath = audioFile.path
             }
             self.mark(audioPath == nil ? "no audio" : "audio \(audio?.count ?? 0)")

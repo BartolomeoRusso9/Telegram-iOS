@@ -133,7 +133,8 @@ static const int kCastAudioSampleRate = 48000;
 - (int)queueAudioFromPath:(NSString *)path {
     int before = av_audio_fifo_size(_fifo);
     AVFormatContext *input = NULL;
-    if (avformat_open_input(&input, path.UTF8String, av_find_input_format("ogg"), NULL) < 0) {
+    // The container is probed: Telegram sends a stream's separate audio as MP4.
+    if (avformat_open_input(&input, path.UTF8String, NULL, NULL) < 0) {
         return 0;
     }
     int streamIndex = -1;
